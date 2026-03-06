@@ -175,41 +175,10 @@ def process_video_ensemble(video_path, model_paths, model_card, device, batch_si
     
     print(f"Processing {total_frames} frames (evaluating 1 every {frame_skip} frames)...")
     
-    with notebook_tqdm(total=total_frames, desc=f"Frames: {video_path.name}", unit='frame', leave=True, dynamic_ncols=True) as pbar:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                if len(batch_frames) > 0:
-                    batch_tensor = torch.stack(batch_frames).to(device)
-                    
-                    fold_logits = []
-                    with torch.no_grad():
-                        for model in models:
-                            outputs = model(batch_tensor)
-                            fold_logits.append(outputs.cpu())
-                    
-                    ensemble_logits_stack = torch.stack(fold_logits)
-                    avg_logits = torch.mean(ensemble_logits_stack, dim=0)
-                    
-                    predicted_indices = torch.argmax(avg_logits, dim=1).numpy()
-                    predicted_classes = [CLASS_NAMES[idx] for idx in predicted_indices]
-                    
-                    for idx, pred_class in zip(batch_frame_indices, predicted_classes):
-                        results.append({
-                            'video_path': str(video_path),
-                            'frame_number': idx,
-                            'weather_prediction': pred_class
-                        })
-                break
-                
-            if current_frame % frame_skip == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(frame_rgb)
-                tensor_img = TRANSFORMS_VAL(pil_img)
-                batch_frames.append(tensor_img)
-                batch_frame_indices.append(current_frame)
-                
-            if len(batch_frames) == batch_size:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            if len(batch_frames) > 0:
                 batch_tensor = torch.stack(batch_frames).to(device)
                 
                 fold_logits = []
@@ -230,12 +199,41 @@ def process_video_ensemble(video_path, model_paths, model_card, device, batch_si
                         'frame_number': idx,
                         'weather_prediction': pred_class
                     })
-                    
-                batch_frames = []
-                batch_frame_indices = []
+            break
+            
+        if current_frame % frame_skip == 0:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(frame_rgb)
+            tensor_img = TRANSFORMS_VAL(pil_img)
+            batch_frames.append(tensor_img)
+            batch_frame_indices.append(current_frame)
+            
+        if len(batch_frames) == batch_size:
+            batch_tensor = torch.stack(batch_frames).to(device)
+            
+            fold_logits = []
+            with torch.no_grad():
+                for model in models:
+                    outputs = model(batch_tensor)
+                    fold_logits.append(outputs.cpu())
+            
+            ensemble_logits_stack = torch.stack(fold_logits)
+            avg_logits = torch.mean(ensemble_logits_stack, dim=0)
+            
+            predicted_indices = torch.argmax(avg_logits, dim=1).numpy()
+            predicted_classes = [CLASS_NAMES[idx] for idx in predicted_indices]
+            
+            for idx, pred_class in zip(batch_frame_indices, predicted_classes):
+                results.append({
+                    'video_path': str(video_path),
+                    'frame_number': idx,
+                    'weather_prediction': pred_class
+                })
+                
+            batch_frames = []
+            batch_frame_indices = []
 
-            current_frame += 1
-            pbar.update(1)
+        current_frame += 1
 
     cap.release()
     
@@ -281,6 +279,6 @@ def reset_output(root_dir):
             print(f"Removing existing CSV: {csv_path}")
             csv_path.unlink()
 
-# reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
+reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
 
 run_all_videos('/home/lorenzo/data/Videos/', BEST_MODELS_PATHS, MNV3_CARD, DEVICE)
