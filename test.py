@@ -279,6 +279,6 @@ def reset_output(root_dir):
             print(f"Removing existing CSV: {csv_path}")
             csv_path.unlink()
 
-reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
+# reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
 
 run_all_videos('/home/lorenzo/data/Videos/', BEST_MODELS_PATHS, MNV3_CARD, DEVICE)
