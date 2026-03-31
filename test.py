@@ -126,6 +126,8 @@ def run_ensemble_inference(model_paths, dataloader, model_card, device):
 
 
 # %%
+from time import time
+
 import cv2
 import torch
 import pandas as pd
@@ -160,45 +162,52 @@ def process_video_ensemble(video_path, model_paths, model_card, device, batch_si
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    print(f"\nLoading ensemble models for {video_path.name}...")
     models = []
     for path in model_paths:
         model = load_best_model_eval(model_card, len(CLASS_NAMES), path, device)
         model.eval()
         models.append(model)
 
+    def inference_batch(batch_frames, batch_frame_indices, video_path, models, device):
+        """Helper function to run inference on a batch and return results"""
+        batch_tensor = torch.stack(batch_frames).to(device)
+        
+        fold_logits = []
+        with torch.no_grad():
+            for model in models:
+                outputs = model(batch_tensor)
+                fold_logits.append(outputs.cpu())
+        
+        ensemble_logits_stack = torch.stack(fold_logits)
+        avg_logits = torch.mean(ensemble_logits_stack, dim=0)
+        
+        predicted_indices = torch.argmax(avg_logits, dim=1).numpy()
+        predicted_classes = [CLASS_NAMES[idx] for idx in predicted_indices]
+        confidences = torch.softmax(avg_logits, dim=1).max(dim=1).values
+        
+        batch_results = []
+        for batch_pos, (idx, pred_class) in enumerate(zip(batch_frame_indices, predicted_classes)):
+            confidence = confidences[batch_pos].item()
+            batch_results.append({
+                'video_path': str(video_path),
+                'frame_number': idx,
+                'weather_prediction': pred_class,
+                'confidence': round(confidence, 4)
+            })
+        return batch_results
+
     results = []
     batch_frames = []
     batch_frame_indices = []
-    
     current_frame = 0
     
-    print(f"Processing {total_frames} frames (evaluating 1 every {frame_skip} frames)...")
+    print(f"Processing {total_frames} frames (evaluating 1 every {frame_skip} frames)")
     
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             if len(batch_frames) > 0:
-                batch_tensor = torch.stack(batch_frames).to(device)
-                
-                fold_logits = []
-                with torch.no_grad():
-                    for model in models:
-                        outputs = model(batch_tensor)
-                        fold_logits.append(outputs.cpu())
-                
-                ensemble_logits_stack = torch.stack(fold_logits)
-                avg_logits = torch.mean(ensemble_logits_stack, dim=0)
-                
-                predicted_indices = torch.argmax(avg_logits, dim=1).numpy()
-                predicted_classes = [CLASS_NAMES[idx] for idx in predicted_indices]
-                
-                for idx, pred_class in zip(batch_frame_indices, predicted_classes):
-                    results.append({
-                        'video_path': str(video_path),
-                        'frame_number': idx,
-                        'weather_prediction': pred_class
-                    })
+                results.extend(inference_batch(batch_frames, batch_frame_indices, video_path, models, device))
             break
             
         if current_frame % frame_skip == 0:
@@ -209,27 +218,7 @@ def process_video_ensemble(video_path, model_paths, model_card, device, batch_si
             batch_frame_indices.append(current_frame)
             
         if len(batch_frames) == batch_size:
-            batch_tensor = torch.stack(batch_frames).to(device)
-            
-            fold_logits = []
-            with torch.no_grad():
-                for model in models:
-                    outputs = model(batch_tensor)
-                    fold_logits.append(outputs.cpu())
-            
-            ensemble_logits_stack = torch.stack(fold_logits)
-            avg_logits = torch.mean(ensemble_logits_stack, dim=0)
-            
-            predicted_indices = torch.argmax(avg_logits, dim=1).numpy()
-            predicted_classes = [CLASS_NAMES[idx] for idx in predicted_indices]
-            
-            for idx, pred_class in zip(batch_frame_indices, predicted_classes):
-                results.append({
-                    'video_path': str(video_path),
-                    'frame_number': idx,
-                    'weather_prediction': pred_class
-                })
-                
+            results.extend(inference_batch(batch_frames, batch_frame_indices, video_path, models, device))
             batch_frames = []
             batch_frame_indices = []
 
@@ -249,6 +238,8 @@ def run_all_videos(root_dir, model_paths, model_card, device):
     
     video_files = list(root_path.rglob('*.mp4'))
     print(f"Found {len(video_files)} videos to process.")
+
+    start_time = time()
     
     for i, video_path in enumerate(video_files):
 
@@ -268,6 +259,12 @@ def run_all_videos(root_dir, model_paths, model_card, device):
         
         df_results.to_csv(csv_path, index=False)
         print(f"Saved results to {csv_path}")
+        inference_time = time() - start_time
+        n_frames = len(df_results)
+        print(f"Inference time: {inference_time:.2f} seconds ({inference_time/n_frames:.4f} seconds/frame)")
+
+    end_time = time()
+    print(f"Total processing time: {end_time - start_time:.2f} seconds")
 
 def reset_output(root_dir):
     root_path = Path(root_dir)
@@ -279,6 +276,6 @@ def reset_output(root_dir):
             print(f"Removing existing CSV: {csv_path}")
             csv_path.unlink()
 
-# reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
+reset_output('/home/lorenzo/data/Videos/') # to clean the folder from previous inference results
 
 run_all_videos('/home/lorenzo/data/Videos/', BEST_MODELS_PATHS, MNV3_CARD, DEVICE)
